@@ -1,0 +1,334 @@
+#include <SPI.h>
+#include <EthernetENC.h>
+
+#define CS_PIN 5
+
+//======================================================
+// Ethernet Ayarları
+//======================================================
+
+byte mac[] = {0xDE,0xAD,0xBE,0xEF,0xFE,0x01};
+
+IPAddress espIP(192,168,0,20);
+IPAddress subnet(255,255,255,0);
+IPAddress dnsIP(0,0,0,0);
+IPAddress gatewayIP(0,0,0,0);
+
+IPAddress plcIP(192,168,0,3);
+
+EthernetClient client;
+
+//======================================================
+// PLC Bağlantısı
+//======================================================
+
+bool connectPLC()
+{
+    Serial.println("--------------------------------");
+    Serial.println("PLC'ye baglaniliyor...");
+
+    if(client.connect(plcIP,502))
+    {
+        Serial.println("Baglanti Basarili");
+        return true;
+    }
+
+    Serial.println("Baglanti Hatasi");
+    return false;
+}
+
+//======================================================
+// PLC Bağlantısını Kapat
+//======================================================
+
+void disconnectPLC()
+{
+    client.stop();
+    Serial.println("Baglanti Kapatildi");
+}
+
+//======================================================
+// Holding Register Oku (Function 03)
+//======================================================
+
+void readHoldingRegisters(uint16_t startAddress,uint16_t quantity)
+{
+
+    uint8_t request[] =
+    {
+        0x00,0x01,                     // Transaction ID
+        0x00,0x00,                     // Protocol ID
+        0x00,0x06,                     // Length
+
+        0xFF,                          // Unit ID
+
+        0x03,                          // Function Code
+
+        highByte(startAddress),
+        lowByte(startAddress),
+
+        highByte(quantity),
+        lowByte(quantity)
+    };
+
+    client.write(request,sizeof(request));
+
+    Serial.println();
+    Serial.println("Holding Register Okuma Istegi Gonderildi");
+
+    delay(100);
+
+    if(client.available())
+    {
+        uint8_t response[64];
+
+        int len=client.read(response,sizeof(response));
+
+        Serial.println();
+        Serial.print("Gelen Byte : ");
+        Serial.println(len);
+
+        Serial.println("Ham Veri");
+
+        for(int i=0;i<len;i++)
+        {
+            if(response[i]<16) Serial.print("0");
+
+            Serial.print(response[i],HEX);
+            Serial.print(" ");
+        }
+
+        Serial.println();
+        Serial.println();
+
+        if(response[7]==0x83)
+        {
+            Serial.print("Modbus Hata Kodu : ");
+            Serial.println(response[8],HEX);
+            return;
+        }
+
+        for(int i=0;i<quantity;i++)
+        {
+            uint16_t value=(response[9+(i*2)]<<8)|response[10+(i*2)];
+
+            Serial.print("HoldingReg[");
+            Serial.print(i);
+            Serial.print("] = ");
+            Serial.println(value);
+        }
+
+    }
+}
+
+//======================================================
+// Holding Register Yaz (Function 06)
+//======================================================
+
+void writeHoldingRegister(uint16_t regAddress,uint16_t value)
+{
+
+    uint8_t request[] =
+    {
+        0x00,0x02,
+        0x00,0x00,
+        0x00,0x06,
+
+        0xFF,
+
+        0x06,
+
+        highByte(regAddress),
+        lowByte(regAddress),
+
+        highByte(value),
+        lowByte(value)
+    };
+
+    client.write(request,sizeof(request));
+
+    Serial.println();
+    Serial.println("Holding Register Yazma Istegi");
+
+    delay(100);
+
+    if(client.available())
+    {
+        uint8_t response[32];
+
+        int len=client.read(response,sizeof(response));
+
+        Serial.print("Yanit : ");
+
+        for(int i=0;i<len;i++)
+        {
+            if(response[i]<16) Serial.print("0");
+
+            Serial.print(response[i],HEX);
+            Serial.print(" ");
+        }
+
+        Serial.println();
+
+        if(response[7]==0x86)
+        {
+            Serial.print("Yazma Hatasi : ");
+            Serial.println(response[8],HEX);
+            return;
+        }
+
+        Serial.println("Yazma Basarili");
+    }
+
+}
+
+//======================================================
+// Function 16
+// Birden Fazla Holding Register Yaz
+//======================================================
+
+void writeMultipleRegisters(uint16_t startAddress,
+                            uint16_t *values,
+                            uint16_t quantity)
+{
+
+    uint8_t request[256];
+
+    //---------------------------------
+    // Transaction ID
+    //---------------------------------
+
+    request[0]=0x00;
+    request[1]=0x03;
+
+    //---------------------------------
+    // Protocol
+    //---------------------------------
+
+    request[2]=0x00;
+    request[3]=0x00;
+
+    //---------------------------------
+    // Length
+    //---------------------------------
+
+    uint16_t length=7+(quantity*2);
+
+    request[4]=highByte(length);
+    request[5]=lowByte(length);
+
+    //---------------------------------
+
+    request[6]=0xFF;
+
+    request[7]=0x10;
+
+    //---------------------------------
+
+    request[8]=highByte(startAddress);
+    request[9]=lowByte(startAddress);
+
+    //---------------------------------
+
+    request[10]=highByte(quantity);
+    request[11]=lowByte(quantity);
+
+    //---------------------------------
+
+    request[12]=quantity*2;
+
+    //---------------------------------
+
+    int index=13;
+
+    for(int i=0;i<quantity;i++)
+    {
+        request[index++]=highByte(values[i]);
+        request[index++]=lowByte(values[i]);
+    }
+
+    client.write(request,index);
+
+    Serial.println();
+    Serial.println("Function 16 Gonderildi");
+
+    delay(100);
+
+    if(client.available())
+    {
+        uint8_t response[32];
+
+        int len=client.read(response,sizeof(response));
+
+        Serial.print("PLC Cevabi : ");
+
+        for(int i=0;i<len;i++)
+        {
+            if(response[i]<16) Serial.print("0");
+
+            Serial.print(response[i],HEX);
+            Serial.print(" ");
+        }
+
+        Serial.println();
+        Serial.println("Yazma Tamamlandi");
+    }
+
+}
+
+
+//======================================================
+// SETUP
+//======================================================
+
+void setup()
+{
+
+    Serial.begin(115200);
+
+    SPI.begin(18,19,23,CS_PIN);
+
+    Ethernet.init(CS_PIN);
+
+    Ethernet.begin(mac,espIP,dnsIP,gatewayIP,subnet);
+
+    delay(1000);
+
+    Serial.print("ESP IP : ");
+    Serial.println(Ethernet.localIP());
+
+}
+
+//======================================================
+// LOOP
+//======================================================
+
+void loop()
+{
+
+    if(connectPLC())
+    {
+
+        //-------------------------------
+        // Holding Register Oku
+        //-------------------------------
+
+        readHoldingRegisters(0,3);
+
+        delay(1000);
+
+        //-------------------------------
+        // Holding Register Yaz
+        //-------------------------------
+
+        uint16_t values[3]={111,222,333};
+
+        writeMultipleRegisters(0,values,3);
+
+        disconnectPLC();
+
+    }
+
+    while(1);
+
+}
